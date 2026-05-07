@@ -1,22 +1,52 @@
 import torch
 import torch.nn as nn
-from torchtyping import TensorType
+from typing import List, Dict
 
-class Solution(nn.Module):
-    def __init__(self):
-        super().__init__()
-        torch.manual_seed(0)
-        # Architecture: Linear(784, 512) -> ReLU -> Dropout(0.2) -> Linear(512, 10) -> Sigmoid
-        self.classifier = nn.Sequential(
-            nn.Linear(784, 512),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(512, 10),
-            nn.Sigmoid()
-        )
 
-    def forward(self, images: TensorType[float]) -> TensorType[float]:
-        torch.manual_seed(0)
-        # images shape: (batch_size, 784)
-        # Return the model's prediction to 4 decimal places
-        return self.classifier(images)
+class Solution:
+
+    def compute_activation_stats(self, model: nn.Module, x: torch.Tensor) -> List[Dict[str, float]]:
+        stats = []
+        with torch.no_grad():
+            for module in model.children():
+                x = module(x)
+                if isinstance(module, nn.Linear):
+                    mean_val = round(x.mean().item(), 4)
+                    std_val = round(x.std().item(), 4)
+                    if x.dim() >= 2:
+                        dead_frac = round(((x <= 0).all(dim=0)).float().mean().item(), 4)
+                    else:
+                        dead_frac = round((x <= 0).float().mean().item(), 4)
+                    stats.append({'mean': mean_val, 'std': std_val, 'dead_fraction': dead_frac})
+        return stats
+
+    def compute_gradient_stats(self, model: nn.Module, x: torch.Tensor, y: torch.Tensor) -> List[Dict[str, float]]:
+        model.zero_grad()
+        output = model(x)
+        loss = nn.MSELoss()(output, y)
+        loss.backward()
+        stats = []
+        for module in model.children():
+            if isinstance(module, nn.Linear):
+                grad = module.weight.grad
+                mean_val = round(grad.mean().item(), 4)
+                std_val = round(grad.std().item(), 4)
+                norm_val = round(torch.norm(grad).item(), 4)
+                stats.append({'mean': mean_val, 'std': std_val, 'norm': norm_val})
+        return stats
+
+    def diagnose(self, activation_stats: List[Dict], gradient_stats: List[Dict]) -> str:
+        for s in activation_stats:
+            if s['dead_fraction'] > 0.5:
+                return 'dead_neurons'
+        for s in gradient_stats:
+            if s['norm'] > 1000:
+                return 'exploding_gradients'
+        if gradient_stats and gradient_stats[-1]['norm'] < 1e-5:
+            return 'vanishing_gradients'
+        for s in activation_stats:
+            if s['std'] < 0.1:
+                return 'vanishing_gradients'
+            if s['std'] > 10.0:
+                return 'exploding_gradients'
+        return 'healthy'
